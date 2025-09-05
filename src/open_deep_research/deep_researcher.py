@@ -51,6 +51,7 @@ from open_deep_research.utils import (
     remove_up_to_last_ai_message,
     think_tool,
 )
+from open_deep_research.llm import get_base_url_for_model, openai_concurrency
 
 # Initialize a configurable model that we will use throughout the agent
 configurable_model = init_chat_model(
@@ -78,12 +79,15 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
     
     # Step 2: Prepare the model for structured clarification analysis
     messages = state["messages"]
+    model_name, base_url = get_base_url_for_model(configurable.research_model)
     model_config = {
-        "model": configurable.research_model,
+        "model": model_name,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
+        "tags": ["langsmith:nostream"],
     }
+    if base_url:
+        model_config["base_url"] = base_url
     
     # Configure model with structured output and retry logic
     clarification_model = (
@@ -98,7 +102,8 @@ async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Comman
         messages=get_buffer_string(messages), 
         date=get_today_str()
     )
-    response = await clarification_model.ainvoke([HumanMessage(content=prompt_content)])
+    async with openai_concurrency():
+        response = await clarification_model.ainvoke([HumanMessage(content=prompt_content)])
     
     # Step 4: Route based on clarification analysis
     if response.need_clarification:
@@ -131,12 +136,15 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     """
     # Step 1: Set up the research model for structured output
     configurable = Configuration.from_runnable_config(config)
+    model_name, base_url = get_base_url_for_model(configurable.research_model)
     research_model_config = {
-        "model": configurable.research_model,
+        "model": model_name,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
+        "tags": ["langsmith:nostream"],
     }
+    if base_url:
+        research_model_config["base_url"] = base_url
     
     # Configure model for structured research question generation
     research_model = (
@@ -151,7 +159,8 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
         messages=get_buffer_string(state.get("messages", [])),
         date=get_today_str()
     )
-    response = await research_model.ainvoke([HumanMessage(content=prompt_content)])
+    async with openai_concurrency():
+        response = await research_model.ainvoke([HumanMessage(content=prompt_content)])
     
     # Step 3: Initialize supervisor with research brief and instructions
     supervisor_system_prompt = lead_researcher_prompt.format(
@@ -191,12 +200,15 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     """
     # Step 1: Configure the supervisor model with available tools
     configurable = Configuration.from_runnable_config(config)
+    model_name, base_url = get_base_url_for_model(configurable.research_model)
     research_model_config = {
-        "model": configurable.research_model,
+        "model": model_name,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
+        "tags": ["langsmith:nostream"],
     }
+    if base_url:
+        research_model_config["base_url"] = base_url
     
     # Available tools: research delegation, completion signaling, and strategic thinking
     lead_researcher_tools = [ConductResearch, ResearchComplete, think_tool]
@@ -211,7 +223,8 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
     
     # Step 2: Generate supervisor response based on current context
     supervisor_messages = state.get("supervisor_messages", [])
-    response = await research_model.ainvoke(supervisor_messages)
+    async with openai_concurrency():
+        response = await research_model.ainvoke(supervisor_messages)
     
     # Step 3: Update state and proceed to tool execution
     return Command(
@@ -389,12 +402,15 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
         )
     
     # Step 2: Configure the researcher model with tools
+    model_name, base_url = get_base_url_for_model(configurable.research_model)
     research_model_config = {
-        "model": configurable.research_model,
+        "model": model_name,
         "max_tokens": configurable.research_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.research_model, config),
-        "tags": ["langsmith:nostream"]
+        "tags": ["langsmith:nostream"],
     }
+    if base_url:
+        research_model_config["base_url"] = base_url
     
     # Prepare system prompt with MCP context if available
     researcher_prompt = research_system_prompt.format(
@@ -412,7 +428,8 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     
     # Step 3: Generate researcher response with system context
     messages = [SystemMessage(content=researcher_prompt)] + researcher_messages
-    response = await research_model.ainvoke(messages)
+    async with openai_concurrency():
+        response = await research_model.ainvoke(messages)
     
     # Step 4: Update state and proceed to tool execution
     return Command(
@@ -524,12 +541,16 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model = configurable_model.with_config({
-        "model": configurable.compression_model,
+    model_name, base_url = get_base_url_for_model(configurable.compression_model)
+    synth_config = {
+        "model": model_name,
         "max_tokens": configurable.compression_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.compression_model, config),
-        "tags": ["langsmith:nostream"]
-    })
+        "tags": ["langsmith:nostream"],
+    }
+    if base_url:
+        synth_config["base_url"] = base_url
+    synthesizer_model = configurable_model.with_config(synth_config)
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
@@ -548,7 +569,8 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
             messages = [SystemMessage(content=compression_prompt)] + researcher_messages
             
             # Execute compression
-            response = await synthesizer_model.ainvoke(messages)
+            async with openai_concurrency():
+                response = await synthesizer_model.ainvoke(messages)
             
             # Extract raw notes from all tool and AI messages
             raw_notes_content = "\n".join([
@@ -624,12 +646,15 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
     
     # Step 2: Configure the final report generation model
     configurable = Configuration.from_runnable_config(config)
+    model_name, base_url = get_base_url_for_model(configurable.final_report_model)
     writer_model_config = {
-        "model": configurable.final_report_model,
+        "model": model_name,
         "max_tokens": configurable.final_report_model_max_tokens,
         "api_key": get_api_key_for_model(configurable.final_report_model, config),
-        "tags": ["langsmith:nostream"]
+        "tags": ["langsmith:nostream"],
     }
+    if base_url:
+        writer_model_config["base_url"] = base_url
     
     # Step 3: Attempt report generation with token limit retry logic
     max_retries = 3
@@ -647,9 +672,10 @@ async def final_report_generation(state: AgentState, config: RunnableConfig):
             )
             
             # Generate the final report
-            final_report = await configurable_model.with_config(writer_model_config).ainvoke([
-                HumanMessage(content=final_report_prompt)
-            ])
+            async with openai_concurrency():
+                final_report = await configurable_model.with_config(writer_model_config).ainvoke([
+                    HumanMessage(content=final_report_prompt)
+                ])
             
             # Return successful report generation
             return {
